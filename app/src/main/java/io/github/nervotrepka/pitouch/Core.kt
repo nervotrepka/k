@@ -15,9 +15,11 @@ import io.github.nervotrepka.pitouch.devices.Device
 import io.github.nervotrepka.pitouch.devices.DeviceKind
 import io.github.nervotrepka.pitouch.devices.DeviceStore
 import io.github.nervotrepka.pitouch.devices.enumOr
+import io.github.nervotrepka.pitouch.hid.KeyMapper
 import io.github.nervotrepka.pitouch.hid.Keyboard
 import io.github.nervotrepka.pitouch.hid.LayoutToggle
 import io.github.nervotrepka.pitouch.hid.Usage
+import io.github.nervotrepka.pitouch.tv.AndroidKey
 import io.github.nervotrepka.pitouch.tv.RemoteKey
 import io.github.nervotrepka.pitouch.tv.SamsungRemote
 
@@ -176,8 +178,48 @@ object Core : Connection.Listener, SamsungRemote.Listener {
         else tv.launchApp(appId)
     }
 
+    // region echo of typed text
+
+    private val echoBuffer = StringBuilder()
+
+    /** What was recently typed on the device, shown on the phone. */
+    val echo: String get() = echoBuffer.toString()
+
+    fun echoType(text: CharSequence) {
+        for (c in text) {
+            if (c == '\b') {
+                if (echoBuffer.isNotEmpty()) echoBuffer.setLength(echoBuffer.length - 1)
+            } else {
+                echoBuffer.append(KeyMapper.substitute(c) ?: c.toString())
+            }
+        }
+        if (echoBuffer.length > ECHO_MAX) echoBuffer.delete(0, echoBuffer.length - ECHO_MAX)
+        notifyChanged()
+    }
+
+    fun echoClear() {
+        echoBuffer.setLength(0)
+        notifyChanged()
+    }
+
+    // endregion
+
+    /** Android tablet navigation key (over Bluetooth). */
+    fun androidKey(key: AndroidKey) {
+        if (btState != LinkState.CONNECTED) {
+            message("Нет подключения по Bluetooth")
+            return
+        }
+        if (key.consumer != 0) {
+            connection.consumer(key.consumer)
+            connection.consumer(0)
+        } else {
+            keyboard.tap(key.usage, key.modifiers)
+        }
+    }
+
     /** Sends a whole text: via the TV's Wi-Fi input when possible, otherwise typed over Bluetooth. */
-    fun sendText(text: String, enter: Boolean) {
+    fun sendText(text: String, enter: Boolean, shiftEnter: Boolean = false) {
         val device = current
         if (device?.ip != null && (tvState == SamsungRemote.State.CONNECTED || btState != LinkState.CONNECTED)) {
             tv.text(text, enter)
@@ -187,9 +229,14 @@ object Core : Connection.Listener, SamsungRemote.Listener {
             message("Нет подключения")
             return
         }
+        keyboard.shiftEnter = shiftEnter
         keyboard.typeText(text)
+        keyboard.shiftEnter = false
         if (enter) keyboard.tap(Usage.ENTER)
+        echoType(text + if (enter) "\n" else "")
     }
+
+    private const val ECHO_MAX = 2000
 
     fun exit() {
         listeners.toList().forEach { it.onExit() }

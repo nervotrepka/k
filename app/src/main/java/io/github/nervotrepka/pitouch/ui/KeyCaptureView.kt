@@ -101,7 +101,7 @@ class KeyCaptureView(context: Context) : View(context) {
         var p = 0
         val n = minOf(before.length, after.length)
         while (p < n && before[p] == after[p]) p++
-        val removed = before.substring(p).count(KeyMapper::canType)
+        val removed = before.substring(p).sumOf(KeyMapper::typedLength)
         if (removed > 0) out.backspace(removed)
         if (p < after.length) out.typeText(after.substring(p))
     }

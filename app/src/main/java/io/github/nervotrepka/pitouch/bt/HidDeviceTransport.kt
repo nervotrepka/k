@@ -137,7 +137,13 @@ class HidDeviceTransport(
 
     override fun send(reportId: Int, report: ByteArray) {
         val device = host ?: return
-        hid?.sendReport(device, reportId, report)
+        // sendReport() returns false when the Bluetooth queue is full: wait and retry instead of losing keys.
+        repeat(SEND_ATTEMPTS) {
+            val proxy = hid ?: return
+            if (proxy.sendReport(device, reportId, report)) return
+            Thread.sleep(RETRY_DELAY_MS)
+            if (host != device) return
+        }
     }
 
     override fun close() {
@@ -151,6 +157,8 @@ class HidDeviceTransport(
     }
 
     companion object {
+        private const val SEND_ATTEMPTS = 40
+        private const val RETRY_DELAY_MS = 5L
         const val UNSUPPORTED =
             "Телефон не поддерживает режим Bluetooth-клавиатуры. Включите режим «Сервер на Pi» в настройках."
     }

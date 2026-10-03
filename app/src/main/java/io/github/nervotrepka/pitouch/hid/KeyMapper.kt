@@ -57,5 +57,19 @@ object KeyMapper {
         else -> null
     }
 
-    fun canType(c: Char): Boolean = layoutFor(c, Layout.EN) != null
+    fun canType(c: Char): Boolean = typedLength(c) > 0
+
+    /** How many key strokes [c] produces (0 = skipped). */
+    fun typedLength(c: Char): Int = if (layoutFor(c, Layout.EN) != null) 1 else substitute(c)?.length ?: 0
+
+    /** Plain replacements for typographic characters that no keyboard key produces. */
+    fun substitute(c: Char): String? = when (c) {
+        '«', '»', '“', '”', '„' -> "\""
+        '‘', '’', '‚' -> "'"
+        '—', '–', '−', '‐' -> "-"
+        '…' -> "..."
+        '\u00A0', '\u2007', '\u202F', '\u2009' -> " "
+        '\u2028', '\u2029' -> "\n"
+        else -> null
+    }
 }

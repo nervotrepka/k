@@ -8,7 +8,9 @@ import android.os.Handler
 import android.os.Looper
 import io.github.nervotrepka.pitouch.hid.HidOutput
 import io.github.nervotrepka.pitouch.hid.HidReports
-import java.util.concurrent.Executors
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 
 enum class Mode { HID, SERVER }
 
@@ -31,7 +33,7 @@ class Connection(private val context: Context, private val listener: Listener) :
     @Volatile var keyDelayMs = 0
 
     private val main = Handler(Looper.getMainLooper())
-    private val io = Executors.newSingleThreadExecutor()
+    private val io = ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS, LinkedBlockingQueue())
     private var transport: Transport? = null
     private var buttons = 0
 
@@ -71,6 +73,19 @@ class Connection(private val context: Context, private val listener: Listener) :
 
     override fun keyboard(modifiers: Int, usage: Int) =
         send(HidReports.ID_KEYBOARD, HidReports.keyboard(modifiers, usage), paced = true)
+
+    override fun pause(ms: Int) {
+        if (state == LinkState.CONNECTED && !io.isShutdown) io.execute { Thread.sleep(ms.toLong()) }
+    }
+
+    /** Reports waiting to be sent (long text being typed). */
+    val pending: Int get() = io.queue.size
+
+    /** Drops queued reports (stops typing a long text) and releases all keys. */
+    fun cancelPending() {
+        io.queue.clear()
+        keyboard(0, 0)
+    }
 
     override fun consumer(usage: Int) =
         send(HidReports.ID_CONSUMER, HidReports.consumer(usage), paced = true)

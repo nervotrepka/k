@@ -12,9 +12,12 @@ import android.content.res.Configuration
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 import android.text.InputType
+import android.text.TextUtils
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
@@ -23,6 +26,7 @@ import android.view.WindowInsets
 import android.view.WindowManager
 import android.view.inputmethod.InputMethodManager
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
@@ -32,11 +36,13 @@ import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import io.github.nervotrepka.pitouch.bt.LinkState
+import io.github.nervotrepka.pitouch.devices.DeviceKind
 import io.github.nervotrepka.pitouch.hid.Layout
 import io.github.nervotrepka.pitouch.hid.Mod
 import io.github.nervotrepka.pitouch.hid.ModState
 import io.github.nervotrepka.pitouch.hid.MouseButton
 import io.github.nervotrepka.pitouch.hid.Usage
+import io.github.nervotrepka.pitouch.tv.AndroidKey
 import io.github.nervotrepka.pitouch.tv.RemoteKey
 import io.github.nervotrepka.pitouch.tv.SamsungRemote
 import io.github.nervotrepka.pitouch.tv.TvApps
@@ -50,6 +56,9 @@ class MainActivity : Activity(), Core.Listener, KeyCaptureView.Sink {
 
     private enum class Page(val title: String) { TOUCHPAD("Тачпад"), REMOTE("Пульт"), TEXT("Текст") }
 
+    private val isAndroid get() = Core.current?.kind == DeviceKind.ANDROID
+    private fun title(p: Page) = if (p == Page.REMOTE && isAndroid) "Навигация" else p.title
+
     private lateinit var w: Widgets
     private lateinit var dialogs: DeviceDialogs
     private lateinit var gyro: GyroMouse
@@ -59,6 +68,21 @@ class MainActivity : Activity(), Core.Listener, KeyCaptureView.Sink {
     private lateinit var touchpad: TouchpadView
     private lateinit var keyCapture: KeyCaptureView
     private lateinit var textInput: EditText
+    private lateinit var echoBar: LinearLayout
+    private lateinit var echoText: TextView
+    private lateinit var shiftEnter: CheckBox
+    private var sendProgress: TextView? = null
+    private var stopButton: Button? = null
+    private var layoutKind: DeviceKind? = null
+    private val handler = Handler(Looper.getMainLooper())
+    private val progressTick = object : Runnable {
+        override fun run() {
+            val left = Core.connection.pending
+            sendProgress?.text = if (left > 0) "Отправка… осталось ~${left / 2} нажатий" else ""
+            stopButton?.visibility = if (left > 0) View.VISIBLE else View.GONE
+            if (left > 0) handler.postDelayed(this, 200)
+        }
+    }
 
     // Rebuilt by relayout().
     private var deviceButton: Button? = null
@@ -96,6 +120,24 @@ class MainActivity : Activity(), Core.Listener, KeyCaptureView.Sink {
             setHintTextColor(Widgets.MUTED_TEXT)
             background = w.background(Widgets.KEY)
             setPadding(w.dp(12), w.dp(10), w.dp(12), w.dp(10))
+        }
+        echoText = TextView(this).apply {
+            textSize = 14f
+            setTextColor(android.graphics.Color.WHITE)
+            ellipsize = TextUtils.TruncateAt.START
+            setPadding(w.dp(10), w.dp(4), w.dp(6), w.dp(4))
+        }
+        echoBar = LinearLayout(this).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            background = w.background(Widgets.KEY)
+            addView(echoText, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            addView(w.button("✕", 14f) { Core.echoClear() }.apply { background = null },
+                LinearLayout.LayoutParams(w.dp(40), w.dp(36)))
+        }
+        shiftEnter = CheckBox(this).apply {
+            text = "Новая строка = Shift+Enter (для мессенджеров)"
+            setTextColor(Widgets.MUTED_TEXT)
+            textSize = 13f
         }
         content = FrameLayout(this)
         root = w.vertical().apply { setBackgroundColor(Widgets.BG) }
@@ -190,7 +232,9 @@ class MainActivity : Activity(), Core.Listener, KeyCaptureView.Sink {
 
     // region Core.Listener
 
-    override fun onCoreChanged() = refresh()
+    override fun onCoreChanged() {
+        if (Core.current?.kind != layoutKind) relayout() else refresh()
+    }
 
     override fun onCoreMessage(message: String) = toast(message)
 
@@ -200,11 +244,27 @@ class MainActivity : Activity(), Core.Listener, KeyCaptureView.Sink {
 
     // region KeyCaptureView.Sink
 
-    override fun typeText(text: String) = keyboard.typeText(text)
+    override fun typeText(text: String) {
+        keyboard.typeText(text)
+        Core.echoType(text)
+    }
 
-    override fun backspace(count: Int) = repeat(count) { keyboard.tap(Usage.BACKSPACE) }
+    override fun backspace(count: Int) {
+        repeat(count) { keyboard.tap(Usage.BACKSPACE) }
+        Core.echoType("\b".repeat(count))
+    }
 
-    override fun key(usage: Int) = keyboard.tap(usage)
+    override fun key(usage: Int) {
+        keyboard.tap(usage)
+        echoKey(usage)
+    }
+
+    private fun echoKey(usage: Int) {
+        when (usage) {
+            Usage.BACKSPACE -> Core.echoType("\b")
+            Usage.ENTER -> Core.echoType("\n")
+        }
+    }
 
     // endregion
 
@@ -229,7 +289,8 @@ class MainActivity : Activity(), Core.Listener, KeyCaptureView.Sink {
             setPadding(w.dp(10), 0, w.dp(10), 0)
             isSingleLine = true
         }
-        val tabs = Page.values().map { p -> p to w.button(p.title, 13f) { showPage(p) }.also { tabButtons[p] = it } }
+        layoutKind = Core.current?.kind
+        val tabs = Page.values().map { p -> p to w.button(title(p), 13f) { showPage(p) }.also { tabButtons[p] = it } }
         val settings = w.button("⚙", 16f) { showSettings() }
         val barHeight = if (compact) 38 else 42
         if (compact || wide) {
@@ -256,7 +317,7 @@ class MainActivity : Activity(), Core.Listener, KeyCaptureView.Sink {
         content.removeAllViews()
         val view = when (p) {
             Page.TOUCHPAD -> touchpadPage()
-            Page.REMOTE -> remotePage()
+            Page.REMOTE -> if (isAndroid) androidPage() else remotePage()
             Page.TEXT -> textPage()
         }
         content.addView(view, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
@@ -280,6 +341,8 @@ class MainActivity : Activity(), Core.Listener, KeyCaptureView.Sink {
         )
 
         val pad = w.vertical()
+        Widgets.detach(echoBar)
+        pad.addView(echoBar, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = w.dp(4) })
         pad.addView(touchpad, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
 
         if (wide) {
@@ -318,7 +381,10 @@ class MainActivity : Activity(), Core.Listener, KeyCaptureView.Sink {
                 true
             }
         }
-        fun hold(label: String, usage: Int) = w.holdButton(label, onDown = { keyboard.press(usage) }, onUp = { keyboard.release() })
+        fun hold(label: String, usage: Int) = w.holdButton(label, onDown = {
+            keyboard.press(usage)
+            echoKey(usage)
+        }, onUp = { keyboard.release() })
         fun mod(label: String, bit: Int) = w.button(label) { keyboard.cycleModifier(bit) }.also { modifierButtons[bit] = it }
         fun tap(label: String, usage: Int, mods: Int = 0) = w.button(label) { keyboard.tap(usage, mods) }
 
@@ -393,6 +459,47 @@ class MainActivity : Activity(), Core.Listener, KeyCaptureView.Sink {
         return page
     }
 
+    private fun androidPage(): View {
+        fun key(k: AndroidKey, size: Float = 14f, color: Int = Widgets.KEY) = w.button(k.label, size, color) { Core.androidKey(k) }
+        fun weighted(vararg views: Pair<View, Float>) =
+            w.row(views.toList(), 0).apply { layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f).apply { topMargin = w.dp(4) } }
+
+        val nav = w.vertical().apply {
+            addView(weighted(key(AndroidKey.BACK, 15f) to 1f, key(AndroidKey.HOME, 15f) to 1f, key(AndroidKey.RECENTS, 15f) to 1f))
+            addView(weighted(key(AndroidKey.SHIFT_TAB) to 1f, key(AndroidKey.UP, 18f) to 1f, key(AndroidKey.TAB) to 1f))
+            addView(weighted(key(AndroidKey.LEFT, 18f) to 1f, key(AndroidKey.OK, 18f, Widgets.ACCENT) to 1f, key(AndroidKey.RIGHT, 18f) to 1f))
+            addView(weighted(key(AndroidKey.NOTIFICATIONS, 13f) to 1f, key(AndroidKey.DOWN, 18f) to 1f, key(AndroidKey.APPS, 13f) to 1f))
+        }
+        val media = w.vertical().apply {
+            addView(weighted(key(AndroidKey.VOL_DOWN) to 1f, key(AndroidKey.MUTE, 17f) to 1f, key(AndroidKey.VOL_UP) to 1f))
+            addView(weighted(key(AndroidKey.PREVIOUS, 17f) to 1f, key(AndroidKey.PLAY_PAUSE, 17f) to 1f, key(AndroidKey.NEXT, 17f) to 1f))
+            addView(weighted(key(AndroidKey.SEARCH, 13f) to 1f, key(AndroidKey.SWITCH_APP, 13f) to 1f, key(AndroidKey.SCREENSHOT, 13f) to 1f))
+            addView(weighted(
+                key(AndroidKey.POWER, 13f) to 1f,
+                w.button("Тачпад", 13f) { showPage(Page.TOUCHPAD) } to 1f,
+                w.button("Текст", 13f) { showPage(Page.TEXT) } to 1f,
+            ))
+        }
+        val hint = TextView(this).apply {
+            text = "Стрелки и OK двигают выделение по интерфейсу. На тачпаде: ПКМ = Назад, прокрутка двумя пальцами."
+            textSize = 12f
+            setTextColor(Widgets.MUTED_TEXT)
+            setPadding(w.dp(4), 0, w.dp(4), 0)
+        }
+        val page = w.vertical()
+        page.addView(hint, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        if (wide || compact) {
+            page.addView(LinearLayout(this).apply {
+                addView(nav, LinearLayout.LayoutParams(0, MATCH_PARENT, 1f))
+                addView(media, LinearLayout.LayoutParams(0, MATCH_PARENT, 1f).apply { leftMargin = w.dp(8) })
+            }, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+        } else {
+            page.addView(nav, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+            page.addView(media, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f).apply { topMargin = w.dp(8) })
+        }
+        return page
+    }
+
     private fun showDigits() {
         val grid = w.vertical().apply { setPadding(w.dp(16), w.dp(8), w.dp(16), w.dp(8)) }
         RemoteKey.DIGITS.chunked(3).forEach { chunk ->
@@ -406,6 +513,22 @@ class MainActivity : Activity(), Core.Listener, KeyCaptureView.Sink {
         val page = w.vertical()
         Widgets.detach(textInput)
         page.addView(textInput, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+        Widgets.detach(shiftEnter)
+        sendProgress = TextView(this).apply {
+            textSize = 13f
+            setTextColor(Widgets.WARN)
+        }
+        stopButton = w.button("Стоп", 13f, Widgets.DANGER) {
+            Core.connection.cancelPending()
+            Core.keyboard.reset()
+            toast("Отправка остановлена")
+        }.apply { visibility = View.GONE }
+        page.addView(LinearLayout(this).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            addView(shiftEnter, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            addView(sendProgress, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
+            addView(stopButton, LinearLayout.LayoutParams(WRAP_CONTENT, w.dp(36)).apply { leftMargin = w.dp(6) })
+        })
         val h = if (compact) 40 else 48
         page.addView(w.row(listOf(
             w.button("Вставить", 13f) { paste() } to 1f,
@@ -422,9 +545,13 @@ class MainActivity : Activity(), Core.Listener, KeyCaptureView.Sink {
             toast("Введите текст")
             return
         }
-        Core.sendText(text, enter)
-        toast(if (Core.current?.ip != null && Core.tvState == SamsungRemote.State.CONNECTED)
-            "Отправлено. На ТВ должно быть открыто поле ввода" else "Отправлено в место ввода")
+        Core.sendText(text, enter, shiftEnter.isChecked)
+        if (Core.current?.ip != null && Core.tvState == SamsungRemote.State.CONNECTED) {
+            toast("Отправлено. На ТВ должно быть открыто поле ввода")
+        } else {
+            handler.removeCallbacks(progressTick)
+            handler.post(progressTick)
+        }
     }
 
     private fun paste() {
@@ -456,6 +583,11 @@ class MainActivity : Activity(), Core.Listener, KeyCaptureView.Sink {
             Core.tvState == SamsungRemote.State.CONNECTING -> "Wi-Fi: подключение к ${device.ip}…"
             else -> "Wi-Fi: нет связи с ${device.ip} (нажмите любую кнопку, чтобы переподключиться)"
         }
+        val echo = Core.echo
+        echoBar.visibility = if (echo.isEmpty() && !imeShown) View.GONE else View.VISIBLE
+        echoText.maxLines = if (compact) 1 else 2
+        echoText.text = echo.takeLast(300).ifEmpty { "Здесь появится набранный текст" }
+        echoText.setTextColor(if (echo.isEmpty()) Widgets.MUTED_TEXT else android.graphics.Color.WHITE)
         for ((p, b) in tabButtons) b.background = w.background(if (p == page) Widgets.ACCENT else Widgets.KEY)
         for ((bit, b) in modifierButtons) b.background = w.background(
             when (keyboard.modifierState(bit)) {
@@ -485,6 +617,7 @@ class MainActivity : Activity(), Core.Listener, KeyCaptureView.Sink {
             imm.restartInput(keyCapture)
             imm.showSoftInput(keyCapture, 0)
             imeShown = true
+            refresh()
         }
     }
 

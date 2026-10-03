@@ -10,7 +10,7 @@ import java.util.UUID
 enum class DeviceKind(val title: String, val toggle: LayoutToggle, val keyDelayMs: Int) {
     PI("Raspberry Pi / Linux", LayoutToggle.ALT_SHIFT, 0),
     WINDOWS("ПК с Windows", LayoutToggle.ALT_SHIFT, 0),
-    ANDROID("Android-планшет", LayoutToggle.CTRL_SPACE, 0),
+    ANDROID("Android-планшет", LayoutToggle.CTRL_SPACE, 8),
     TV("Samsung TV", LayoutToggle.ALT_SHIFT, 25),
     OTHER("Другое", LayoutToggle.ALT_SHIFT, 0),
 }

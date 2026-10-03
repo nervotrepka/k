@@ -9,6 +9,8 @@ interface HidOutput {
     fun mouseButton(button: Int, down: Boolean)
     /** Presses a consumer key ([usage] 0 = release). */
     fun consumer(usage: Int)
+    /** Delays the following reports (lets the host finish e.g. a layout switch). */
+    fun pause(ms: Int) {}
 }
 
 /** Hotkey that switches the keyboard layout on the Pi. */
@@ -56,7 +58,18 @@ class Keyboard(private val out: HidOutput) {
 
     fun typeText(text: CharSequence) = text.forEach(::typeChar)
 
+    /** Newline sent as Shift+Enter (new line without sending the message in chat apps). */
+    var shiftEnter = false
+
     fun typeChar(c: Char) {
+        if (c == '\n' && shiftEnter) {
+            tap(Usage.ENTER, Mod.SHIFT)
+            return
+        }
+        if (KeyMapper.layoutFor(c, layout) == null) {
+            KeyMapper.substitute(c)?.let { typeText(it) }
+            return
+        }
         val target = KeyMapper.layoutFor(c, layout) ?: return
         if (target != layout) switchLayout()
         val stroke = KeyMapper.map(c, layout) ?: return
@@ -89,9 +102,14 @@ class Keyboard(private val out: HidOutput) {
             }
             if (toggle.usage != 0) out.keyboard(held, toggle.usage)
             out.keyboard(0, 0)
+            out.pause(LAYOUT_SWITCH_PAUSE_MS)
         }
         layout = layout.other()
         onChange?.invoke()
+    }
+
+    private companion object {
+        const val LAYOUT_SWITCH_PAUSE_MS = 60
     }
 
     /** Called on (re)connect: a freshly booted Pi starts in the first (EN) layout. */

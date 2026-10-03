@@ -1,6 +1,7 @@
 package io.github.nervotrepka.pitouch.tv
 
 import io.github.nervotrepka.pitouch.hid.Consumer
+import io.github.nervotrepka.pitouch.hid.Mod
 import io.github.nervotrepka.pitouch.hid.Usage
 
 /**
@@ -52,4 +53,30 @@ enum class RemoteKey(val label: String, val samsung: String, val consumer: Int =
 /** Samsung Smart Hub app ids. */
 object TvApps {
     const val YOUTUBE = "111299001912"
+}
+
+/** Navigation keys for an Android tablet connected as a Bluetooth keyboard. */
+enum class AndroidKey(val label: String, val consumer: Int = 0, val usage: Int = 0, val modifiers: Int = 0) {
+    BACK("◁ Назад", consumer = Consumer.BACK),
+    HOME("○ Домой", consumer = Consumer.HOME),
+    RECENTS("▢ Недавние", consumer = 0x29F),
+    SWITCH_APP("Alt+Tab", usage = Usage.TAB, modifiers = Mod.ALT),
+    NOTIFICATIONS("Уведомл.", usage = Usage.letter('n'), modifiers = Mod.SUPER),
+    APPS("Приложения", modifiers = Mod.SUPER), // tapping the Meta key alone opens the app list
+    SEARCH("Поиск", consumer = 0x221),
+    UP("▲", usage = Usage.UP),
+    DOWN("▼", usage = Usage.DOWN),
+    LEFT("◀", usage = Usage.LEFT),
+    RIGHT("▶", usage = Usage.RIGHT),
+    OK("OK", usage = Usage.ENTER),
+    TAB("Tab →", usage = Usage.TAB),
+    SHIFT_TAB("← Tab", usage = Usage.TAB, modifiers = Mod.SHIFT),
+    VOL_DOWN("Гром −", consumer = Consumer.VOLUME_DOWN),
+    MUTE("🔇", consumer = Consumer.MUTE),
+    VOL_UP("Гром +", consumer = Consumer.VOLUME_UP),
+    PREVIOUS("⏮", consumer = Consumer.PREVIOUS),
+    PLAY_PAUSE("⏯", consumer = Consumer.PLAY_PAUSE),
+    NEXT("⏭", consumer = Consumer.NEXT),
+    SCREENSHOT("Скриншот", usage = Usage.PRINT_SCREEN),
+    POWER("⏻ Экран", consumer = 0x30),
 }

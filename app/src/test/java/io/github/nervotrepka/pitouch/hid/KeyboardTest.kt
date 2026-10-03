@@ -77,6 +77,26 @@ class KeyboardTest {
     }
 
     @Test
+    fun typographicCharactersAreSubstituted() {
+        val out = Recorder()
+        Keyboard(out).typeText("«—»")
+        assertEquals(
+            listOf(Mod.SHIFT to 0x34, 0 to 0, 0 to 0x2D, 0 to 0, Mod.SHIFT to 0x34, 0 to 0),
+            out.reports,
+        )
+        assertEquals(3, KeyMapper.typedLength('…'))
+    }
+
+    @Test
+    fun shiftEnterForNewlines() {
+        val out = Recorder()
+        val kb = Keyboard(out)
+        kb.shiftEnter = true
+        kb.typeText("\n")
+        assertEquals(listOf(Mod.SHIFT to Usage.ENTER, 0 to 0), out.reports)
+    }
+
+    @Test
     fun consumerReport() {
         assertEquals(listOf(0x23, 0x02), HidReports.consumer(Consumer.HOME).map { it.toInt() and 0xFF })
     }

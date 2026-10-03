@@ -48,6 +48,7 @@ _HID_TABLE = [
 HID_TO_KEY = {usage: code for usage, code in enumerate(_HID_TABLE) if code}
 # Consumer page usage -> Linux key code (media keys, Home, Back).
 CONSUMER_TO_KEY = {
+    0x30: 116,  # KEY_POWER
     0x9C: 402,  # KEY_CHANNELUP
     0x9D: 403,  # KEY_CHANNELDOWN
     0xB3: 208,  # KEY_FASTFORWARD
@@ -61,6 +62,8 @@ CONSUMER_TO_KEY = {
     0xEA: 114,  # KEY_VOLUMEDOWN
     0x223: 172,  # KEY_HOMEPAGE
     0x224: 158,  # KEY_BACK
+    0x221: 217,  # KEY_SEARCH
+    0x29F: 120,  # KEY_SCALE (show all windows)
 }
 KEYBOARD_KEYS = sorted(set(HID_TO_KEY.values()) | set(MODIFIER_KEYS) | set(CONSUMER_TO_KEY.values()))
 
