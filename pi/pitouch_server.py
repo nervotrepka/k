@@ -20,7 +20,8 @@ PROFILE_PATH = "/io/github/nervotrepka/pitouch"
 
 REPORT_KEYBOARD = 1
 REPORT_MOUSE = 2
-REPORT_SIZES = {REPORT_KEYBOARD: 8, REPORT_MOUSE: 7}
+REPORT_CONSUMER = 3
+REPORT_SIZES = {REPORT_KEYBOARD: 8, REPORT_MOUSE: 7, REPORT_CONSUMER: 2}
 
 # Linux input event codes (linux/input-event-codes.h).
 EV_KEY = 0x01
@@ -45,7 +46,23 @@ _HID_TABLE = [
     72, 73, 82, 83, 86, 127,
 ]
 HID_TO_KEY = {usage: code for usage, code in enumerate(_HID_TABLE) if code}
-KEYBOARD_KEYS = sorted(set(HID_TO_KEY.values()) | set(MODIFIER_KEYS))
+# Consumer page usage -> Linux key code (media keys, Home, Back).
+CONSUMER_TO_KEY = {
+    0x9C: 402,  # KEY_CHANNELUP
+    0x9D: 403,  # KEY_CHANNELDOWN
+    0xB3: 208,  # KEY_FASTFORWARD
+    0xB4: 168,  # KEY_REWIND
+    0xB5: 163,  # KEY_NEXTSONG
+    0xB6: 165,  # KEY_PREVIOUSSONG
+    0xB7: 166,  # KEY_STOPCD
+    0xCD: 164,  # KEY_PLAYPAUSE
+    0xE2: 113,  # KEY_MUTE
+    0xE9: 115,  # KEY_VOLUMEUP
+    0xEA: 114,  # KEY_VOLUMEDOWN
+    0x223: 172,  # KEY_HOMEPAGE
+    0x224: 158,  # KEY_BACK
+}
+KEYBOARD_KEYS = sorted(set(HID_TO_KEY.values()) | set(MODIFIER_KEYS) | set(CONSUMER_TO_KEY.values()))
 
 log = logging.getLogger("pitouch")
 
@@ -78,13 +95,27 @@ class ReportTranslator:
     def __init__(self):
         self.keys = set()
         self.buttons = 0
+        self.consumer_key = None
 
     def translate(self, report_id, report):
         if report_id == REPORT_KEYBOARD:
             return self.keyboard(report)
         if report_id == REPORT_MOUSE:
             return self.mouse(report)
+        if report_id == REPORT_CONSUMER:
+            return self.consumer(report)
         return []
+
+    def consumer(self, report):
+        (usage,) = struct.unpack("<H", report)
+        code = CONSUMER_TO_KEY.get(usage)
+        events = []
+        if self.consumer_key is not None and self.consumer_key != code:
+            events.append((EV_KEY, self.consumer_key, 0))
+        if code is not None and code != self.consumer_key:
+            events.append((EV_KEY, code, 1))
+        self.consumer_key = code
+        return events
 
     def keyboard(self, report):
         modifiers = report[0]
@@ -111,6 +142,7 @@ class ReportTranslator:
     def release_all(self):
         events = self.keyboard(bytes(8))
         events += self.mouse(bytes(7))
+        events += self.consumer(bytes(2))
         return events
 
 

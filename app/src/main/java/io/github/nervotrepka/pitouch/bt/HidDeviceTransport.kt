@@ -52,24 +52,26 @@ class HidDeviceTransport(
                 }
                 BluetoothProfile.STATE_CONNECTING -> callback.onState(LinkState.CONNECTING, device, null)
                 BluetoothProfile.STATE_DISCONNECTED -> {
-                    val failed = host == null && pending == device
                     if (host != null && host != device) return
+                    val wasHost = host == device
                     host = null
+                    val next = pending
+                    if (wasHost && next != null && next != device && registered) {
+                        connectNow(next) // switching to another host
+                        return
+                    }
+                    val failed = !wasHost && next == device
                     pending = null
                     callback.onState(
                         if (registered) LinkState.WAITING else LinkState.DISCONNECTED, device,
-                        if (failed) "Не удалось подключиться. Pi сопряжён с телефоном в этом режиме?" else null,
+                        if (failed) "Не удалось подключиться. Устройство сопряжено с телефоном в этом режиме?" else null,
                     )
                 }
             }
         }
 
         override fun onGetReport(device: BluetoothDevice, type: Byte, id: Byte, bufferSize: Int) {
-            val size = when (id.toInt()) {
-                HidReports.ID_KEYBOARD -> HidReports.KEYBOARD_SIZE
-                HidReports.ID_MOUSE -> HidReports.MOUSE_SIZE
-                else -> 0
-            }
+            val size = HidReports.size(id.toInt())
             if (type == BluetoothHidDevice.REPORT_TYPE_INPUT && size > 0) {
                 hid?.replyReport(device, type, id, ByteArray(size))
             } else {
@@ -110,9 +112,13 @@ class HidDeviceTransport(
     override fun connect(device: BluetoothDevice) {
         val current = host
         if (current == device) return
-        if (current != null) hid?.disconnect(current)
         pending = device
-        if (registered) connectNow(device)
+        if (current != null) {
+            callback.onState(LinkState.CONNECTING, device, null)
+            hid?.disconnect(current) // connects to [pending] once disconnected
+        } else if (registered) {
+            connectNow(device)
+        }
     }
 
     private fun connectNow(device: BluetoothDevice) {

@@ -7,12 +7,15 @@ interface HidOutput {
     fun mouseMove(dx: Int, dy: Int)
     fun mouseScroll(wheel: Int, pan: Int)
     fun mouseButton(button: Int, down: Boolean)
+    /** Presses a consumer key ([usage] 0 = release). */
+    fun consumer(usage: Int)
 }
 
 /** Hotkey that switches the keyboard layout on the Pi. */
 enum class LayoutToggle(val title: String, val modifiers: Int, val usage: Int) {
     ALT_SHIFT("Alt+Shift", Mod.ALT or Mod.SHIFT, 0),
     CTRL_SHIFT("Ctrl+Shift", Mod.CTRL or Mod.SHIFT, 0),
+    CTRL_SPACE("Ctrl+Space (Android)", Mod.CTRL, Usage.SPACE),
     SUPER_SPACE("Win+Space", Mod.SUPER, Usage.SPACE),
     CAPS_LOCK("Caps Lock", 0, Usage.CAPS_LOCK),
 }

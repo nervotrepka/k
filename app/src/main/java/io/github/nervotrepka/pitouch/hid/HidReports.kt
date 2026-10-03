@@ -34,6 +34,23 @@ object Mod {
     const val SUPER = 0x08
 }
 
+/** Consumer page (0x0C) usages: media and TV keys. */
+object Consumer {
+    const val CHANNEL_UP = 0x9C
+    const val CHANNEL_DOWN = 0x9D
+    const val FAST_FORWARD = 0xB3
+    const val REWIND = 0xB4
+    const val NEXT = 0xB5
+    const val PREVIOUS = 0xB6
+    const val STOP = 0xB7
+    const val PLAY_PAUSE = 0xCD
+    const val MUTE = 0xE2
+    const val VOLUME_UP = 0xE9
+    const val VOLUME_DOWN = 0xEA
+    const val HOME = 0x223
+    const val BACK = 0x224
+}
+
 object MouseButton {
     const val LEFT = 0x01
     const val RIGHT = 0x02
@@ -47,8 +64,17 @@ object MouseButton {
 object HidReports {
     const val ID_KEYBOARD = 1
     const val ID_MOUSE = 2
+    const val ID_CONSUMER = 3
     const val KEYBOARD_SIZE = 8
     const val MOUSE_SIZE = 7
+    const val CONSUMER_SIZE = 2
+
+    fun size(id: Int): Int = when (id) {
+        ID_KEYBOARD -> KEYBOARD_SIZE
+        ID_MOUSE -> MOUSE_SIZE
+        ID_CONSUMER -> CONSUMER_SIZE
+        else -> 0
+    }
 
     val DESCRIPTOR: ByteArray = bytes(
         // Keyboard: modifiers, reserved byte, LED output, 6 key slots.
@@ -67,6 +93,10 @@ object HidReports {
         0x09, 0x38, 0x15, 0x81, 0x25, 0x7F, 0x75, 0x08, 0x95, 0x01, 0x81, 0x06,
         0x05, 0x0C, 0x0A, 0x38, 0x02, 0x15, 0x81, 0x25, 0x7F, 0x75, 0x08, 0x95, 0x01, 0x81, 0x06,
         0xC0, 0xC0,
+        // Consumer control: one 16-bit usage (volume, media, Home, Back).
+        0x05, 0x0C, 0x09, 0x01, 0xA1, 0x01, 0x85, ID_CONSUMER,
+        0x15, 0x00, 0x26, 0xFF, 0x03, 0x19, 0x00, 0x2A, 0xFF, 0x03, 0x75, 0x10, 0x95, 0x01, 0x81, 0x00,
+        0xC0,
     )
 
     fun keyboard(modifiers: Int, usage: Int): ByteArray {
@@ -87,6 +117,8 @@ object HidReports {
             pan.coerceIn(-127, 127).toByte(),
         )
     }
+
+    fun consumer(usage: Int): ByteArray = byteArrayOf(usage.toByte(), (usage shr 8).toByte())
 
     private fun bytes(vararg values: Int) = ByteArray(values.size) { values[it].toByte() }
 }

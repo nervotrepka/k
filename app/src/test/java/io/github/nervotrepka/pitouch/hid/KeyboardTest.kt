@@ -13,6 +13,7 @@ class KeyboardTest {
         override fun mouseMove(dx: Int, dy: Int) {}
         override fun mouseScroll(wheel: Int, pan: Int) {}
         override fun mouseButton(button: Int, down: Boolean) {}
+        override fun consumer(usage: Int) {}
     }
 
     @Test
@@ -64,6 +65,20 @@ class KeyboardTest {
             out.reports,
         )
         assertEquals(ModState.OFF, kb.modifierState(Mod.CTRL))
+    }
+
+    @Test
+    fun ctrlSpaceToggle() {
+        val out = Recorder()
+        val kb = Keyboard(out)
+        kb.toggle = LayoutToggle.CTRL_SPACE
+        kb.typeChar('ж')
+        assertEquals(listOf(Mod.CTRL to 0, Mod.CTRL to Usage.SPACE, 0 to 0, 0 to 0x33, 0 to 0), out.reports)
+    }
+
+    @Test
+    fun consumerReport() {
+        assertEquals(listOf(0x23, 0x02), HidReports.consumer(Consumer.HOME).map { it.toInt() and 0xFF })
     }
 
     @Test

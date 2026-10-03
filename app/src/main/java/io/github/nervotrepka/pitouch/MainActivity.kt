@@ -5,83 +5,121 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.AlertDialog
 import android.bluetooth.BluetoothAdapter
-import android.bluetooth.BluetoothDevice
+import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.Color
-import android.graphics.drawable.GradientDrawable
-import android.graphics.drawable.StateListDrawable
+import android.content.res.Configuration
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
+import android.text.InputType
 import android.view.Gravity
-import android.view.HapticFeedbackConstants
-import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.view.WindowInsets
 import android.view.WindowManager
 import android.view.inputmethod.InputMethodManager
-import android.widget.ArrayAdapter
 import android.widget.Button
-import android.widget.HorizontalScrollView
+import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.LinearLayout
-import android.widget.RadioButton
-import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.SeekBar
-import android.widget.Spinner
 import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
-import io.github.nervotrepka.pitouch.bt.Connection
 import io.github.nervotrepka.pitouch.bt.LinkState
-import io.github.nervotrepka.pitouch.bt.Mode
-import io.github.nervotrepka.pitouch.hid.Keyboard
 import io.github.nervotrepka.pitouch.hid.Layout
-import io.github.nervotrepka.pitouch.hid.LayoutToggle
 import io.github.nervotrepka.pitouch.hid.Mod
 import io.github.nervotrepka.pitouch.hid.ModState
 import io.github.nervotrepka.pitouch.hid.MouseButton
 import io.github.nervotrepka.pitouch.hid.Usage
+import io.github.nervotrepka.pitouch.tv.RemoteKey
+import io.github.nervotrepka.pitouch.tv.SamsungRemote
+import io.github.nervotrepka.pitouch.tv.TvApps
 import io.github.nervotrepka.pitouch.ui.GyroMouse
 import io.github.nervotrepka.pitouch.ui.KeyCaptureView
 import io.github.nervotrepka.pitouch.ui.TouchpadView
+import io.github.nervotrepka.pitouch.ui.Widgets
 
-@SuppressLint("MissingPermission", "SetTextI18n", "ClickableViewAccessibility")
-class MainActivity : Activity(), Connection.Listener, KeyCaptureView.Sink {
+@SuppressLint("MissingPermission", "SetTextI18n")
+class MainActivity : Activity(), Core.Listener, KeyCaptureView.Sink {
 
-    private lateinit var prefs: Prefs
-    private lateinit var connection: Connection
-    private lateinit var keyboard: Keyboard
+    private enum class Page(val title: String) { TOUCHPAD("Тачпад"), REMOTE("Пульт"), TEXT("Текст") }
+
+    private lateinit var w: Widgets
+    private lateinit var dialogs: DeviceDialogs
     private lateinit var gyro: GyroMouse
 
-    private lateinit var status: TextView
-    private lateinit var connectButton: Button
+    private lateinit var root: LinearLayout
+    private lateinit var content: FrameLayout
     private lateinit var touchpad: TouchpadView
     private lateinit var keyCapture: KeyCaptureView
-    private lateinit var layoutButton: Button
-    private lateinit var gyroButton: Button
-    private val modifierButtons = mutableMapOf<Int, Button>()
+    private lateinit var textInput: EditText
 
+    // Rebuilt by relayout().
+    private var deviceButton: Button? = null
+    private var tvStatus: TextView? = null
+    private var layoutButton: Button? = null
+    private var gyroButton: Button? = null
+    private val modifierButtons = mutableMapOf<Int, Button>()
+    private val tabButtons = mutableMapOf<Page, Button>()
+
+    private var page = Page.TOUCHPAD
+    private var keysExpanded = false
     private var gyroEnabled = false
     private var imeShown = false
 
-    private val density get() = resources.displayMetrics.density
-    private fun dp(v: Int) = (v * density).toInt()
+    private val keyboard get() = Core.keyboard
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Core.init(this)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        prefs = Prefs(this)
-        connection = Connection(this, this)
-        keyboard = Keyboard(connection).apply { onChange = ::refreshKeys }
-        gyro = GyroMouse(this) { dx, dy -> connection.mouseMove(dx, dy) }
-        setContentView(buildUi())
+        w = Widgets(this)
+        dialogs = DeviceDialogs(this)
+        gyro = GyroMouse(this) { dx, dy -> Core.connection.mouseMove(dx, dy) }
+        page = Page.values().firstOrNull { it.name == Core.prefs.page } ?: Page.TOUCHPAD
+
+        touchpad = TouchpadView(this).apply { output = Core.connection }
+        keyCapture = KeyCaptureView(this).apply { sink = this@MainActivity }
+        textInput = EditText(this).apply {
+            setText(Core.prefs.draft)
+            hint = "Наберите текст здесь и нажмите «Отправить»"
+            gravity = Gravity.TOP or Gravity.START
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+                InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or InputType.TYPE_TEXT_FLAG_AUTO_CORRECT
+            setTextColor(android.graphics.Color.WHITE)
+            setHintTextColor(Widgets.MUTED_TEXT)
+            background = w.background(Widgets.KEY)
+            setPadding(w.dp(12), w.dp(10), w.dp(12), w.dp(10))
+        }
+        content = FrameLayout(this)
+        root = w.vertical().apply { setBackgroundColor(Widgets.BG) }
+        setContentView(root)
         applyPrefs()
-        refreshKeys()
-        onConnectionState(LinkState.DISCONNECTED, null, null)
+        relayout()
         startBluetooth()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        Core.listeners += this
+        refresh()
+        // Back from background: retry a link that dropped meanwhile.
+        val device = Core.current
+        if (device != null && Core.bluetoothReady && device.btAddress != null &&
+            Core.btState != LinkState.CONNECTED && Core.btState != LinkState.CONNECTING
+        ) Core.connect(device)
+    }
+
+    override fun onStop() {
+        Core.listeners -= this
+        Core.prefs.draft = textInput.text.toString()
+        super.onStop()
     }
 
     override fun onResume() {
@@ -94,27 +132,26 @@ class MainActivity : Activity(), Connection.Listener, KeyCaptureView.Sink {
         gyro.stop()
     }
 
-    override fun onDestroy() {
-        connection.close()
-        super.onDestroy()
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        relayout()
     }
 
-    // region Bluetooth
-
-    private fun requiredPermissions(): Array<String> =
-        if (Build.VERSION.SDK_INT >= 31) {
-            arrayOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_ADVERTISE)
-        } else {
-            emptyArray()
-        }
+    // region Bluetooth start
 
     private fun startBluetooth() {
-        val adapter = connection.adapter
+        val adapter = Core.connection.adapter
         if (adapter == null) {
-            status.text = "На телефоне нет Bluetooth"
+            toast("На телефоне нет Bluetooth")
+            Core.start()
             return
         }
-        val missing = requiredPermissions().filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        val needed = mutableListOf<String>()
+        if (Build.VERSION.SDK_INT >= 31) {
+            needed += listOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_ADVERTISE)
+        }
+        if (Build.VERSION.SDK_INT >= 33) needed += Manifest.permission.POST_NOTIFICATIONS
+        val missing = needed.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
         if (missing.isNotEmpty()) {
             requestPermissions(missing.toTypedArray(), RC_PERMISSIONS)
             return
@@ -123,17 +160,13 @@ class MainActivity : Activity(), Connection.Listener, KeyCaptureView.Sink {
             startActivityForResult(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE), RC_ENABLE_BT)
             return
         }
-        connection.start(prefs.mode)
-        connectToSaved()
+        Core.start()
+        if (Core.devices.devices.isEmpty()) showWelcome()
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         if (requestCode != RC_PERMISSIONS) return
-        if (grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
-            startBluetooth()
-        } else {
-            status.text = "Нужно разрешение на Bluetooth"
-        }
+        if (Core.hasBluetoothPermissions()) startBluetooth() else toast("Нужно разрешение на Bluetooth")
     }
 
     @Deprecated("Deprecated in Java")
@@ -141,66 +174,27 @@ class MainActivity : Activity(), Connection.Listener, KeyCaptureView.Sink {
         if (requestCode == RC_ENABLE_BT && resultCode == RESULT_OK) startBluetooth()
     }
 
-    private fun savedDevice(): BluetoothDevice? {
-        val address = prefs.deviceAddress ?: return null
-        if (!BluetoothAdapter.checkBluetoothAddress(address)) return null
-        return connection.adapter?.getRemoteDevice(address)
-    }
-
-    private fun connectToSaved() {
-        val device = savedDevice() ?: return
-        keyboard.reset()
-        connection.connect(device)
-    }
-
-    private fun onConnectClicked() {
-        when {
-            connection.mode == null -> startBluetooth()
-            connection.state == LinkState.CONNECTED || connection.state == LinkState.CONNECTING ->
-                connection.disconnect()
-            savedDevice() != null -> connectToSaved()
-            else -> pickDevice()
-        }
-    }
-
-    private fun pickDevice() {
-        val adapter = connection.adapter ?: return
-        if (!adapter.isEnabled) {
-            startBluetooth()
-            return
-        }
-        val devices = adapter.bondedDevices.sortedBy { it.name ?: it.address }
-        if (devices.isEmpty()) {
-            toast("Нет сопряжённых устройств. Сначала выполните сопряжение с Pi — см. «Справка» в настройках.")
-            return
-        }
-        AlertDialog.Builder(this, DIALOG_THEME)
-            .setTitle("Выберите Raspberry Pi")
-            .setItems(devices.map { "${it.name ?: "?"}\n${it.address}" }.toTypedArray()) { _, i ->
-                prefs.deviceAddress = devices[i].address
-                connectToSaved()
-            }
+    private fun showWelcome() {
+        AlertDialog.Builder(this, DeviceDialogs.THEME)
+            .setTitle("Добро пожаловать")
+            .setMessage(
+                "Добавьте устройство, которым хотите управлять: Raspberry Pi, ПК, планшет или телевизор.\n\n" +
+                    "Сначала выполните сопряжение по Bluetooth (см. ⚙ → Справка), затем добавьте устройство."
+            )
+            .setPositiveButton("Добавить") { _, _ -> dialogs.showEditor(null) }
+            .setNegativeButton("Позже", null)
             .show()
     }
 
-    override fun onConnectionState(state: LinkState, device: BluetoothDevice?, error: String?) {
-        if (error != null) toast(error)
-        val name = device?.name ?: device?.address ?: ""
-        val (text, color) = when (state) {
-            LinkState.CONNECTED -> "● Подключено: $name" to Color.rgb(0x5C, 0xD6, 0x8A)
-            LinkState.CONNECTING -> "● Подключение… $name" to Color.rgb(0xF2, 0xB8, 0x4B)
-            LinkState.WAITING -> "● Ожидание Pi (режим клавиатуры)" to Color.rgb(0xF2, 0xB8, 0x4B)
-            LinkState.DISCONNECTED -> "● Не подключено" to Color.rgb(0xE5, 0x6B, 0x6B)
-        }
-        status.text = text
-        status.setTextColor(color)
-        connectButton.text =
-            if (state == LinkState.CONNECTED || state == LinkState.CONNECTING) "Отключить" else "Подключить"
-        if (state == LinkState.CONNECTED && device != null) {
-            if (prefs.deviceAddress != device.address) prefs.deviceAddress = device.address
-            keyboard.reset()
-        }
-    }
+    // endregion
+
+    // region Core.Listener
+
+    override fun onCoreChanged() = refresh()
+
+    override fun onCoreMessage(message: String) = toast(message)
+
+    override fun onExit() = finishAndRemoveTask()
 
     // endregion
 
@@ -214,207 +208,267 @@ class MainActivity : Activity(), Connection.Listener, KeyCaptureView.Sink {
 
     // endregion
 
-    // region UI
+    // region layout
 
-    private fun buildUi(): View {
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(BG)
-            setPadding(dp(8), dp(8), dp(8), dp(8))
+    private val widthDp get() = resources.configuration.screenWidthDp
+    private val heightDp get() = resources.configuration.screenHeightDp
+    /** Half-screen split, landscape phone: little vertical space. */
+    private val compact get() = heightDp < 480
+    /** Room for two columns side by side. */
+    private val wide get() = widthDp >= 560 && widthDp > heightDp * 1.15
+
+    private fun relayout() {
+        root.removeAllViews()
+        modifierButtons.clear()
+        tabButtons.clear()
+        val pad = if (compact) 4 else 8
+        root.setPadding(w.dp(pad), w.dp(pad), w.dp(pad), w.dp(pad))
+
+        deviceButton = w.button("", 13f) { dialogs.showList() }.apply {
+            gravity = Gravity.CENTER_VERTICAL or Gravity.START
+            setPadding(w.dp(10), 0, w.dp(10), 0)
+            isSingleLine = true
+        }
+        val tabs = Page.values().map { p -> p to w.button(p.title, 13f) { showPage(p) }.also { tabButtons[p] = it } }
+        val settings = w.button("⚙", 16f) { showSettings() }
+        val barHeight = if (compact) 38 else 42
+        if (compact || wide) {
+            root.addView(w.row(
+                listOf(deviceButton!! to 2.2f) + tabs.map { it.second to 1f } + listOf(settings to 0.6f),
+                barHeight, topMargin = 0,
+            ))
+        } else {
+            root.addView(w.row(listOf(deviceButton!! to 1f, settings to 0.18f), barHeight, topMargin = 0))
+            root.addView(w.row(tabs.map { it.second to 1f }, 38))
         }
 
-        val top = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
-        status = TextView(this).apply {
-            textSize = 14f
-            setOnClickListener { pickDevice() }
+        Widgets.detach(content)
+        root.addView(content, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f).apply { topMargin = w.dp(4) })
+        Widgets.detach(keyCapture)
+        root.addView(keyCapture, LinearLayout.LayoutParams(1, 1))
+        showPage(page)
+    }
+
+    private fun showPage(p: Page) {
+        page = p
+        Core.prefs.page = p.name
+        if (p != Page.TOUCHPAD) hideIme()
+        content.removeAllViews()
+        val view = when (p) {
+            Page.TOUCHPAD -> touchpadPage()
+            Page.REMOTE -> remotePage()
+            Page.TEXT -> textPage()
         }
-        connectButton = keyButton("Подключить").apply { setOnClickListener { onConnectClicked() } }
-        val settings = keyButton("⚙").apply { setOnClickListener { showSettings() } }
-        top.addView(status, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-        top.addView(connectButton, LinearLayout.LayoutParams(WRAP_CONTENT, dp(42)))
-        top.addView(settings, LinearLayout.LayoutParams(dp(48), dp(42)).apply { leftMargin = dp(6) })
-        root.addView(top)
+        content.addView(view, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        refresh()
+    }
 
-        touchpad = TouchpadView(this).apply { output = connection }
-        root.addView(touchpad, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f).apply { topMargin = dp(8) })
+    private fun touchpadPage(): View {
+        val keyHeight = if (compact) 38 else 44
+        Widgets.detach(touchpad)
+        val mouseRow = listOf(
+            w.holdButton("ЛКМ", onDown = { Core.connection.mouseButton(MouseButton.LEFT, true) },
+                onUp = { Core.connection.mouseButton(MouseButton.LEFT, false) }) to 3f,
+            w.holdButton("СКМ", onDown = { Core.connection.mouseButton(MouseButton.MIDDLE, true) },
+                onUp = { Core.connection.mouseButton(MouseButton.MIDDLE, false) }) to 1.3f,
+            w.holdButton("ПКМ", onDown = { Core.connection.mouseButton(MouseButton.RIGHT, true) },
+                onUp = { Core.connection.mouseButton(MouseButton.RIGHT, false) }) to 3f,
+        )
+        val tools = listOf(
+            w.button("⌨", 18f) { toggleIme() } to 1f,
+            w.button("◎", 18f) { toggleGyro() }.also { gyroButton = it } to 1f,
+        )
 
-        root.addView(row(
-            mouseButton("ЛКМ", MouseButton.LEFT) to 3f,
-            mouseButton("СКМ", MouseButton.MIDDLE) to 1.4f,
-            mouseButton("ПКМ", MouseButton.RIGHT) to 3f,
-            height = 54,
-        ))
+        val pad = w.vertical()
+        pad.addView(touchpad, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
 
-        layoutButton = keyButton("EN").apply {
-            setOnClickListener { keyboard.switchLayout() }
+        if (wide) {
+            pad.addView(w.row(mouseRow, if (compact) 44 else 54))
+            val keys = w.vertical()
+            keys.addView(w.row(tools, keyHeight, topMargin = 0))
+            keyRows(keyHeight).forEach { keys.addView(it) }
+            return LinearLayout(this).apply {
+                addView(pad, LinearLayout.LayoutParams(0, MATCH_PARENT, 1.25f))
+                addView(ScrollView(this@MainActivity).apply { addView(keys) },
+                    LinearLayout.LayoutParams(0, MATCH_PARENT, 1f).apply { leftMargin = w.dp(6) })
+            }
+        }
+        if (compact) {
+            pad.addView(w.row(mouseRow.map { it.first to 2f } + tools + listOf(keysToggleButton() to 1f), keyHeight))
+            if (keysExpanded) keyRows(keyHeight).take(3).forEach { pad.addView(it) }
+            return pad
+        }
+        pad.addView(w.row(mouseRow, 52))
+        keyRows(keyHeight).forEach { pad.addView(it) }
+        pad.addView(w.row(tools, keyHeight))
+        return pad
+    }
+
+    private fun keysToggleButton(): Button =
+        w.button(if (keysExpanded) "▾" else "⋯", 16f) {
+            keysExpanded = !keysExpanded
+            showPage(Page.TOUCHPAD)
+        }
+
+    private fun keyRows(height: Int): List<View> {
+        layoutButton = w.button("EN") { keyboard.switchLayout() }.apply {
             setOnLongClickListener {
                 keyboard.switchLayout(send = false)
-                toast("Индикатор раскладки исправлен без отправки на Pi")
+                toast("Индикатор раскладки исправлен без отправки")
                 true
             }
         }
-        root.addView(row(
-            holdKey("Esc", Usage.ESC) to 1f,
-            holdKey("Tab", Usage.TAB) to 1f,
-            modifierKey("Ctrl", Mod.CTRL) to 1f,
-            modifierKey("Alt", Mod.ALT) to 1f,
-            modifierKey("Shift", Mod.SHIFT) to 1.2f,
-            modifierKey("Win", Mod.SUPER) to 1f,
-            layoutButton to 1.1f,
-        ))
-        root.addView(row(
-            holdKey("←", Usage.LEFT) to 1f,
-            holdKey("↓", Usage.DOWN) to 1f,
-            holdKey("↑", Usage.UP) to 1f,
-            holdKey("→", Usage.RIGHT) to 1f,
-            holdKey("Home", Usage.HOME) to 1.2f,
-            holdKey("End", Usage.END) to 1.1f,
-            holdKey("Del", Usage.DELETE) to 1f,
-            holdKey("⌫", Usage.BACKSPACE) to 1f,
-            holdKey("⏎", Usage.ENTER) to 1f,
-        ))
+        fun hold(label: String, usage: Int) = w.holdButton(label, onDown = { keyboard.press(usage) }, onUp = { keyboard.release() })
+        fun mod(label: String, bit: Int) = w.button(label) { keyboard.cycleModifier(bit) }.also { modifierButtons[bit] = it }
+        fun tap(label: String, usage: Int, mods: Int = 0) = w.button(label) { keyboard.tap(usage, mods) }
 
-        val fKeys = (1..12).map { tapKey("F$it", Usage.f(it)) } + listOf(
-            tapKey("PgUp", Usage.PAGE_UP), tapKey("PgDn", Usage.PAGE_DOWN),
-            tapKey("Ins", Usage.INSERT), tapKey("PrtSc", Usage.PRINT_SCREEN),
+        val rowA = w.row(listOf(
+            hold("Esc", Usage.ESC) to 1f, hold("Tab", Usage.TAB) to 1f, mod("Ctrl", Mod.CTRL) to 1f,
+            mod("Alt", Mod.ALT) to 1f, mod("Shift", Mod.SHIFT) to 1.2f, mod("Win", Mod.SUPER) to 1f,
+            layoutButton!! to 1.1f,
+        ), height)
+        val rowB = w.row(listOf(
+            hold("←", Usage.LEFT) to 1f, hold("↓", Usage.DOWN) to 1f, hold("↑", Usage.UP) to 1f,
+            hold("→", Usage.RIGHT) to 1f, hold("Home", Usage.HOME) to 1.2f, hold("End", Usage.END) to 1.1f,
+            hold("Del", Usage.DELETE) to 1f, hold("⌫", Usage.BACKSPACE) to 1f, hold("⏎", Usage.ENTER) to 1f,
+        ), height)
+        val extra = (1..12).map { tap("F$it", Usage.f(it)) } + listOf(
+            tap("PgUp", Usage.PAGE_UP), tap("PgDn", Usage.PAGE_DOWN), tap("Ins", Usage.INSERT),
+            tap("PrtSc", Usage.PRINT_SCREEN),
         )
-        root.addView(scrollRow(fKeys))
-        root.addView(scrollRow(listOf(
-            tapKey("Ctrl+C", Usage.letter('c'), Mod.CTRL),
-            tapKey("Ctrl+V", Usage.letter('v'), Mod.CTRL),
-            tapKey("Ctrl+X", Usage.letter('x'), Mod.CTRL),
-            tapKey("Ctrl+Z", Usage.letter('z'), Mod.CTRL),
-            tapKey("Ctrl+A", Usage.letter('a'), Mod.CTRL),
-            tapKey("Ctrl+S", Usage.letter('s'), Mod.CTRL),
-            tapKey("Alt+Tab", Usage.TAB, Mod.ALT),
-            tapKey("Alt+F4", Usage.f(4), Mod.ALT),
-            tapKey("Терминал", Usage.letter('t'), Mod.CTRL or Mod.ALT),
-            tapKey("Ctrl+Shift+C", Usage.letter('c'), Mod.CTRL or Mod.SHIFT),
-            tapKey("Ctrl+Shift+V", Usage.letter('v'), Mod.CTRL or Mod.SHIFT),
-        )))
-
-        val keyboardButton = keyButton("⌨  Клавиатура").apply { setOnClickListener { toggleIme() } }
-        gyroButton = keyButton("◎  Гироскоп").apply { setOnClickListener { toggleGyro() } }
-        root.addView(row(keyboardButton to 1f, gyroButton to 1f, height = 50))
-
-        keyCapture = KeyCaptureView(this).apply { sink = this@MainActivity }
-        root.addView(keyCapture, LinearLayout.LayoutParams(1, 1))
-        return root
+        val shortcuts = listOf(
+            tap("Ctrl+C", Usage.letter('c'), Mod.CTRL), tap("Ctrl+V", Usage.letter('v'), Mod.CTRL),
+            tap("Ctrl+X", Usage.letter('x'), Mod.CTRL), tap("Ctrl+Z", Usage.letter('z'), Mod.CTRL),
+            tap("Ctrl+A", Usage.letter('a'), Mod.CTRL), tap("Ctrl+S", Usage.letter('s'), Mod.CTRL),
+            tap("Alt+Tab", Usage.TAB, Mod.ALT), tap("Alt+F4", Usage.f(4), Mod.ALT),
+            tap("Терминал", Usage.letter('t'), Mod.CTRL or Mod.ALT),
+            tap("Win+D", Usage.letter('d'), Mod.SUPER), tap("Win+E", Usage.letter('e'), Mod.SUPER),
+        )
+        return if (compact) {
+            listOf(rowA, rowB, w.scrollRow(shortcuts + extra, height))
+        } else {
+            listOf(rowA, rowB, w.scrollRow(extra, height), w.scrollRow(shortcuts, height))
+        }
     }
 
-    private fun row(vararg views: Pair<View, Float>, height: Int = 46): LinearLayout =
-        LinearLayout(this).apply {
-            for ((v, weight) in views) {
-                addView(v, LinearLayout.LayoutParams(0, MATCH_PARENT, weight).apply {
-                    leftMargin = dp(2); rightMargin = dp(2)
-                })
+    private fun remotePage(): View {
+        fun key(k: RemoteKey, size: Float = 15f) = w.button(k.label, size) { Core.remote(k) }
+        fun weighted(vararg views: Pair<View, Float>) =
+            w.row(views.toList(), 0).apply { layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f).apply { topMargin = w.dp(4) } }
+
+        tvStatus = TextView(this).apply {
+            textSize = 12f
+            setTextColor(Widgets.MUTED_TEXT)
+            setPadding(w.dp(4), 0, w.dp(4), 0)
+        }
+        val nav = w.vertical().apply {
+            addView(weighted(key(RemoteKey.POWER, 18f) to 1f, key(RemoteKey.SOURCE, 13f) to 1f, key(RemoteKey.HOME, 13f) to 1f))
+            addView(weighted(key(RemoteKey.MENU, 13f) to 1f, key(RemoteKey.UP, 18f) to 1f, key(RemoteKey.INFO, 13f) to 1f))
+            addView(weighted(key(RemoteKey.LEFT, 18f) to 1f, w.button("OK", 18f, Widgets.ACCENT) { Core.remote(RemoteKey.OK) } to 1f,
+                key(RemoteKey.RIGHT, 18f) to 1f))
+            addView(weighted(key(RemoteKey.BACK, 13f) to 1f, key(RemoteKey.DOWN, 18f) to 1f, key(RemoteKey.EXIT, 13f) to 1f))
+        }
+        val media = w.vertical().apply {
+            addView(weighted(key(RemoteKey.VOL_UP) to 1f, key(RemoteKey.MUTE, 17f) to 1f, key(RemoteKey.CH_UP) to 1f))
+            addView(weighted(key(RemoteKey.VOL_DOWN) to 1f, w.button("123", 15f) { showDigits() } to 1f, key(RemoteKey.CH_DOWN) to 1f))
+            addView(weighted(key(RemoteKey.REWIND, 17f) to 1f, key(RemoteKey.PLAY, 17f) to 1f, key(RemoteKey.PAUSE, 17f) to 1f,
+                key(RemoteKey.FAST_FORWARD, 17f) to 1f))
+            addView(weighted(
+                w.button("YouTube", 13f, Widgets.DANGER) { Core.launchApp(TvApps.YOUTUBE) } to 1f,
+                w.button("Тачпад", 13f) { showPage(Page.TOUCHPAD) } to 1f,
+                w.button("Текст", 13f) { showPage(Page.TEXT) } to 1f,
+            ))
+        }
+        val page = w.vertical()
+        page.addView(tvStatus, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        if (wide || compact) {
+            page.addView(LinearLayout(this).apply {
+                addView(nav, LinearLayout.LayoutParams(0, MATCH_PARENT, 1f))
+                addView(media, LinearLayout.LayoutParams(0, MATCH_PARENT, 1f).apply { leftMargin = w.dp(8) })
+            }, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+        } else {
+            page.addView(nav, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+            page.addView(media, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f).apply { topMargin = w.dp(8) })
+        }
+        return page
+    }
+
+    private fun showDigits() {
+        val grid = w.vertical().apply { setPadding(w.dp(16), w.dp(8), w.dp(16), w.dp(8)) }
+        RemoteKey.DIGITS.chunked(3).forEach { chunk ->
+            val views = chunk.map { k -> w.button(k.label, 20f) { Core.remote(k) } to 1f }
+            grid.addView(w.row(if (chunk.size == 1) listOf(w.spacer() to 1f) + views + listOf(w.spacer() to 1f) else views, 56))
+        }
+        AlertDialog.Builder(this, DeviceDialogs.THEME).setView(grid).setPositiveButton("Готово", null).show()
+    }
+
+    private fun textPage(): View {
+        val page = w.vertical()
+        Widgets.detach(textInput)
+        page.addView(textInput, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+        val h = if (compact) 40 else 48
+        page.addView(w.row(listOf(
+            w.button("Вставить", 13f) { paste() } to 1f,
+            w.button("Очистить", 13f) { textInput.setText("") } to 1f,
+            w.button("Отправить", 13f, Widgets.ACCENT) { sendText(enter = false) } to 1.3f,
+            w.button("Отпр. + ⏎", 13f, Widgets.ACTIVE) { sendText(enter = true) } to 1.3f,
+        ), h))
+        return page
+    }
+
+    private fun sendText(enter: Boolean) {
+        val text = textInput.text.toString()
+        if (text.isEmpty() && !enter) {
+            toast("Введите текст")
+            return
+        }
+        Core.sendText(text, enter)
+        toast(if (Core.current?.ip != null && Core.tvState == SamsungRemote.State.CONNECTED)
+            "Отправлено. На ТВ должно быть открыто поле ввода" else "Отправлено в место ввода")
+    }
+
+    private fun paste() {
+        val clip = getSystemService(ClipboardManager::class.java)?.primaryClip
+        val text = clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(this)
+        if (text.isNullOrEmpty()) toast("Буфер обмена пуст") else textInput.text.insert(textInput.selectionStart.coerceAtLeast(0), text)
+    }
+
+    // endregion
+
+    private fun refresh() {
+        val device = Core.current
+        deviceButton?.let { b ->
+            val (state, color) = when {
+                device == null -> "добавьте устройство" to Widgets.BAD
+                Core.btState == LinkState.CONNECTED || Core.tvState == SamsungRemote.State.CONNECTED ->
+                    "подключено" to Widgets.GOOD
+                Core.btState == LinkState.CONNECTING || Core.tvState == SamsungRemote.State.CONNECTING ->
+                    "подключение…" to Widgets.WARN
+                Core.btState == LinkState.WAITING && device.btAddress == null -> "ожидание" to Widgets.WARN
+                else -> "нет связи" to Widgets.BAD
             }
-            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, dp(height)).apply { topMargin = dp(5) }
+            b.text = "● ${device?.name ?: "Устройство"} — $state ▾"
+            b.setTextColor(color)
         }
-
-    private fun scrollRow(views: List<View>): HorizontalScrollView {
-        val inner = LinearLayout(this)
-        for (v in views) {
-            inner.addView(v, LinearLayout.LayoutParams(WRAP_CONTENT, MATCH_PARENT).apply {
-                leftMargin = dp(2); rightMargin = dp(2)
-            })
+        tvStatus?.text = when {
+            device?.ip == null -> "Пульт по Bluetooth. Для всех кнопок укажите IP телевизора в настройках устройства."
+            Core.tvState == SamsungRemote.State.CONNECTED -> "Wi-Fi: подключено к ${device.ip}"
+            Core.tvState == SamsungRemote.State.CONNECTING -> "Wi-Fi: подключение к ${device.ip}…"
+            else -> "Wi-Fi: нет связи с ${device.ip} (нажмите любую кнопку, чтобы переподключиться)"
         }
-        return HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-            addView(inner, LinearLayout.LayoutParams(WRAP_CONTENT, MATCH_PARENT))
-            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, dp(44)).apply { topMargin = dp(5) }
-        }
-    }
-
-    private fun keyBackground(color: Int): StateListDrawable {
-        fun shape(c: Int) = GradientDrawable().apply {
-            cornerRadius = 10 * density
-            setColor(c)
-        }
-        return StateListDrawable().apply {
-            addState(intArrayOf(android.R.attr.state_pressed), shape(KEY_PRESSED))
-            addState(intArrayOf(), shape(color))
-        }
-    }
-
-    private fun keyButton(label: String) = Button(this).apply {
-        text = label
-        isAllCaps = false
-        textSize = 14f
-        setTextColor(Color.WHITE)
-        minWidth = dp(48)
-        minimumWidth = dp(48)
-        minHeight = 0
-        minimumHeight = 0
-        setPadding(dp(8), 0, dp(8), 0)
-        stateListAnimator = null
-        background = keyBackground(KEY)
-    }
-
-    /** Key held down while touched, so the Pi's auto-repeat works (arrows, Backspace). */
-    private fun holdKey(label: String, usage: Int, modifiers: Int = 0) = keyButton(label).apply {
-        setOnTouchListener { v, e ->
-            when (e.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    v.isPressed = true
-                    v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                    keyboard.press(usage, modifiers)
-                }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    v.isPressed = false
-                    keyboard.release()
-                }
+        for ((p, b) in tabButtons) b.background = w.background(if (p == page) Widgets.ACCENT else Widgets.KEY)
+        for ((bit, b) in modifierButtons) b.background = w.background(
+            when (keyboard.modifierState(bit)) {
+                ModState.OFF -> Widgets.KEY
+                ModState.ONCE -> Widgets.ONCE
+                ModState.LOCKED -> Widgets.ACTIVE
             }
-            true
+        )
+        layoutButton?.let {
+            it.text = if (keyboard.layout == Layout.RU) "RU" else "EN"
+            it.background = w.background(if (keyboard.layout == Layout.RU) Widgets.ACCENT else Widgets.KEY)
         }
-    }
-
-    /** Key sent on click; used in scrollable rows so scrolling doesn't press keys. */
-    private fun tapKey(label: String, usage: Int, modifiers: Int = 0) = keyButton(label).apply {
-        setOnClickListener {
-            it.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-            keyboard.tap(usage, modifiers)
-        }
-    }
-
-    private fun modifierKey(label: String, mod: Int) = keyButton(label).apply {
-        modifierButtons[mod] = this
-        setOnClickListener {
-            it.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-            keyboard.cycleModifier(mod)
-        }
-    }
-
-    private fun mouseButton(label: String, button: Int) = keyButton(label).apply {
-        setOnTouchListener { v, e ->
-            when (e.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    v.isPressed = true
-                    v.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-                    connection.mouseButton(button, true)
-                }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    v.isPressed = false
-                    connection.mouseButton(button, false)
-                }
-            }
-            true
-        }
-    }
-
-    private fun refreshKeys() {
-        if (!::layoutButton.isInitialized) return
-        for ((mod, button) in modifierButtons) {
-            button.background = keyBackground(
-                when (keyboard.modifierState(mod)) {
-                    ModState.OFF -> KEY
-                    ModState.ONCE -> ONCE
-                    ModState.LOCKED -> LOCKED
-                }
-            )
-        }
-        layoutButton.text = if (keyboard.layout == Layout.RU) "RU" else "EN"
-        layoutButton.background = keyBackground(if (keyboard.layout == Layout.RU) RU_COLOR else KEY)
+        gyroButton?.background = w.background(if (gyroEnabled) Widgets.ACTIVE else Widgets.KEY)
     }
 
     private fun toggleIme() {
@@ -425,14 +479,18 @@ class MainActivity : Activity(), Connection.Listener, KeyCaptureView.Sink {
             imeShown
         }
         if (visible) {
-            imm.hideSoftInputFromWindow(keyCapture.windowToken, 0)
-            imeShown = false
+            hideIme()
         } else {
             keyCapture.requestFocus()
             imm.restartInput(keyCapture)
             imm.showSoftInput(keyCapture, 0)
             imeShown = true
         }
+    }
+
+    private fun hideIme() {
+        getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(root.windowToken, 0)
+        imeShown = false
     }
 
     private fun toggleGyro() {
@@ -442,11 +500,12 @@ class MainActivity : Activity(), Connection.Listener, KeyCaptureView.Sink {
         }
         gyroEnabled = !gyroEnabled
         if (gyroEnabled) gyro.start() else gyro.stop()
-        gyroButton.background = keyBackground(if (gyroEnabled) LOCKED else KEY)
-        if (gyroEnabled) toast("Держите телефон горизонтально, верхом к монитору")
+        if (gyroEnabled) toast("Держите телефон горизонтально, верхом к экрану")
+        refresh()
     }
 
     private fun applyPrefs() {
+        val prefs = Core.prefs
         touchpad.sensitivity = prefs.sensitivity
         touchpad.acceleration = prefs.acceleration
         touchpad.scrollSpeed = prefs.scrollSpeed
@@ -454,42 +513,38 @@ class MainActivity : Activity(), Connection.Listener, KeyCaptureView.Sink {
         touchpad.tapToClick = prefs.tapToClick
         gyro.sensitivity = prefs.gyroSensitivity
         keyCapture.suggestions = prefs.suggestions
-        keyboard.toggle = prefs.layoutToggle
     }
 
     private fun showSettings() {
-        val content = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(8), dp(20), dp(8))
-        }
+        val prefs = Core.prefs
+        val content = w.vertical().apply { setPadding(w.dp(20), w.dp(8), w.dp(20), w.dp(8)) }
         fun label(text: String) = TextView(this).apply {
             this.text = text
-            setTextColor(Color.rgb(0xB0, 0xB4, 0xBC))
-            setPadding(0, dp(12), 0, dp(2))
+            setTextColor(Widgets.MUTED_TEXT)
+            setPadding(0, w.dp(12), 0, w.dp(2))
+            content.addView(this)
         }
-
-        content.addView(label("Режим подключения"))
-        val modes = RadioGroup(this)
-        val hidRadio = RadioButton(this).apply { text = "Bluetooth-клавиатура (на Pi ничего не нужно)"; id = View.generateViewId() }
-        val serverRadio = RadioButton(this).apply { text = "Сервер на Pi (если первый режим не работает)"; id = View.generateViewId() }
-        modes.addView(hidRadio)
-        modes.addView(serverRadio)
-        modes.check(if (prefs.mode == Mode.HID) hidRadio.id else serverRadio.id)
-        content.addView(modes)
-
-        content.addView(Button(this).apply {
-            text = "Выбрать Raspberry Pi"
-            setOnClickListener { pickDevice() }
+        fun action(text: String, onClick: () -> Unit) = content.addView(Button(this).apply {
+            this.text = text
+            setOnClickListener { onClick() }
         })
-        content.addView(Button(this).apply {
-            text = "Сделать телефон видимым (для сопряжения)"
-            setOnClickListener {
-                startActivity(
-                    Intent(BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE)
-                        .putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, 120)
-                )
+
+        label("Устройства и подключение")
+        action("Устройства…") { dialogs.showList() }
+        action("Сделать телефон видимым (для сопряжения)") {
+            startActivity(
+                Intent(BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE)
+                    .putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, 120)
+            )
+        }
+        val power = getSystemService(PowerManager::class.java)
+        if (!power.isIgnoringBatteryOptimizations(packageName)) {
+            action("Разрешить работу в фоне (не отключать связь)") {
+                @SuppressLint("BatteryLife")
+                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName"))
+                startActivity(intent)
             }
-        })
+        }
 
         val sensitivity = slider(content, "Скорость курсора", prefs.sensitivity)
         val acceleration = slider(content, "Ускорение курсора", prefs.acceleration, min = 0f)
@@ -499,30 +554,23 @@ class MainActivity : Activity(), Connection.Listener, KeyCaptureView.Sink {
         fun switch(text: String, checked: Boolean) = Switch(this).apply {
             this.text = text
             isChecked = checked
-            setPadding(0, dp(8), 0, dp(8))
+            setPadding(0, w.dp(8), 0, w.dp(8))
             content.addView(this)
         }
         val natural = switch("Естественная прокрутка (как на телефоне)", prefs.naturalScroll)
         val tap = switch("Тап по тачпаду = клик", prefs.tapToClick)
         val suggest = switch("Подсказки и автозамена клавиатуры телефона", prefs.suggestions)
 
-        content.addView(label("Переключение раскладки на Pi"))
-        val toggles = LayoutToggle.values()
-        val toggleSpinner = Spinner(this).apply {
-            adapter = ArrayAdapter(
-                this@MainActivity, android.R.layout.simple_spinner_dropdown_item, toggles.map { it.title }
-            )
-            setSelection(toggles.indexOf(prefs.layoutToggle))
-        }
-        content.addView(toggleSpinner)
-
-        content.addView(label("Справка"))
+        label("Справка")
         content.addView(TextView(this).apply {
             text = HELP
             textSize = 13f
         })
+        action("Выйти и отключиться") {
+            startService(Intent(this, ConnectionService::class.java).setAction(ConnectionService.ACTION_EXIT))
+        }
 
-        AlertDialog.Builder(this, DIALOG_THEME)
+        AlertDialog.Builder(this, DeviceDialogs.THEME)
             .setTitle("Настройки")
             .setView(ScrollView(this).apply { addView(content) })
             .setPositiveButton("Сохранить") { _, _ ->
@@ -536,13 +584,7 @@ class MainActivity : Activity(), Connection.Listener, KeyCaptureView.Sink {
                     prefs.suggestions = suggest.isChecked
                     imeShown = false
                 }
-                prefs.layoutToggle = toggles[toggleSpinner.selectedItemPosition]
                 applyPrefs()
-                val mode = if (modes.checkedRadioButtonId == hidRadio.id) Mode.HID else Mode.SERVER
-                if (mode != prefs.mode) {
-                    prefs.mode = mode
-                    startBluetooth()
-                }
             }
             .setNegativeButton("Отмена", null)
             .show()
@@ -550,7 +592,7 @@ class MainActivity : Activity(), Connection.Listener, KeyCaptureView.Sink {
 
     /** Adds a 0.1–4.0 slider and returns its getter. */
     private fun slider(parent: LinearLayout, title: String, value: Float, min: Float = 0.1f): () -> Float {
-        val text = TextView(this).apply { setPadding(0, dp(10), 0, 0) }
+        val text = TextView(this).apply { setPadding(0, w.dp(10), 0, 0) }
         val bar = SeekBar(this).apply {
             max = 40
             progress = (value * 10).toInt().coerceIn(0, 40)
@@ -572,36 +614,26 @@ class MainActivity : Activity(), Connection.Listener, KeyCaptureView.Sink {
 
     private fun toast(text: String) = Toast.makeText(this, text, Toast.LENGTH_LONG).show()
 
-    // endregion
-
     private companion object {
         const val RC_PERMISSIONS = 1
         const val RC_ENABLE_BT = 2
-        const val DIALOG_THEME = android.R.style.Theme_DeviceDefault_Dialog_Alert
 
-        val BG = Color.rgb(0x15, 0x17, 0x1C)
-        val KEY = Color.rgb(0x2C, 0x30, 0x38)
-        val KEY_PRESSED = Color.rgb(0x4A, 0x50, 0x5C)
-        val ONCE = Color.rgb(0xB5, 0x84, 0x1F)
-        val LOCKED = Color.rgb(0x2E, 0x8B, 0x57)
-        val RU_COLOR = Color.rgb(0x2F, 0x5D, 0xA8)
+        const val HELP = """Сопряжение (Pi, ПК, планшет, ТВ):
+1. Если телефон уже был сопряжён с устройством — удалите сопряжение на обоих.
+2. Откройте PiTouch и нажмите «Сделать телефон видимым».
+3. На устройстве найдите телефон в списке Bluetooth и подключите:
+   • Pi: значок Bluetooth → Add Device;
+   • Windows: Параметры → Bluetooth → Добавить устройство;
+   • Android: Настройки → Bluetooth → выбрать телефон;
+   • Samsung TV: Настройки → Общие → Диспетчер внешних устройств → Bluetooth.
+4. Устройство само появится в списке. Тип и раскладку можно поменять в «Устройства… → Изменить».
 
-        const val HELP = """Режим «Bluetooth-клавиатура»:
-1. Если телефон уже был сопряжён с Pi — удалите сопряжение на обоих устройствах.
-2. Откройте приложение в этом режиме и нажмите «Сделать телефон видимым».
-3. На Pi: значок Bluetooth → Add Device → выберите телефон (или bluetoothctl: pair, trust, connect).
-4. После этого Pi будет видеть телефон как клавиатуру и мышь.
+Wi-Fi пульт Samsung: в устройстве типа «Samsung TV» укажите IP или нажмите «Найти телевизор». При первом подключении нажмите «Разрешить» на ТВ.
 
-Режим «Сервер на Pi»:
-1. На Pi выполните install.sh из папки pi (см. README).
-2. Выполните обычное сопряжение телефона с Pi.
-3. Нажмите «Выбрать Raspberry Pi» и выберите его.
+Русский язык: на устройстве должна быть включена русская раскладка, а сочетание переключения совпадать с настройкой устройства. Долгое нажатие на EN/RU исправляет индикатор.
 
-Русский язык: на Pi должны быть раскладки us,ru с тем же сочетанием переключения
-(скрипт pi/setup-keyboard-layout.sh). Кнопка EN/RU переключает раскладку,
-долгое нажатие — только исправляет индикатор, если он сбился.
+Ctrl/Alt/Shift/Win: одно нажатие — для следующей клавиши (жёлтая), второе — фиксация (зелёная), третье — выключить.
 
-Ctrl/Alt/Shift/Win: одно нажатие — для следующей клавиши (жёлтая),
-второе — зафиксировать (зелёная), третье — выключить."""
+Связь не рвётся при сворачивании: в шторке висит уведомление PiTouch. Чтобы выйти — «Выход» в уведомлении."""
     }
 }

@@ -27,6 +27,9 @@ class Connection(private val context: Context, private val listener: Listener) :
     var mode: Mode? = null
         private set
 
+    /** Pause after each key report; slow receivers (TVs) drop keys typed too fast. */
+    @Volatile var keyDelayMs = 0
+
     private val main = Handler(Looper.getMainLooper())
     private val io = Executors.newSingleThreadExecutor()
     private var transport: Transport? = null
@@ -67,7 +70,10 @@ class Connection(private val context: Context, private val listener: Listener) :
     }
 
     override fun keyboard(modifiers: Int, usage: Int) =
-        send(HidReports.ID_KEYBOARD, HidReports.keyboard(modifiers, usage))
+        send(HidReports.ID_KEYBOARD, HidReports.keyboard(modifiers, usage), paced = true)
+
+    override fun consumer(usage: Int) =
+        send(HidReports.ID_CONSUMER, HidReports.consumer(usage), paced = true)
 
     override fun mouseMove(dx: Int, dy: Int) {
         if (dx != 0 || dy != 0) send(HidReports.ID_MOUSE, HidReports.mouse(buttons, dx, dy, 0, 0))
@@ -82,9 +88,13 @@ class Connection(private val context: Context, private val listener: Listener) :
         send(HidReports.ID_MOUSE, HidReports.mouse(buttons, 0, 0, 0, 0))
     }
 
-    private fun send(id: Int, report: ByteArray) {
-        if (state != LinkState.CONNECTED) return
+    private fun send(id: Int, report: ByteArray, paced: Boolean = false) {
+        if (state != LinkState.CONNECTED || io.isShutdown) return
         val t = transport ?: return
-        io.execute { t.send(id, report) }
+        io.execute {
+            t.send(id, report)
+            val delay = keyDelayMs
+            if (paced && delay > 0) Thread.sleep(delay.toLong())
+        }
     }
 }

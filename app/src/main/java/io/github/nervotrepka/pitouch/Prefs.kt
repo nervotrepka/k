@@ -1,19 +1,16 @@
 package io.github.nervotrepka.pitouch
 
 import android.content.Context
-import io.github.nervotrepka.pitouch.bt.Mode
-import io.github.nervotrepka.pitouch.hid.LayoutToggle
 
 class Prefs(context: Context) {
     private val sp = context.getSharedPreferences("pitouch", Context.MODE_PRIVATE)
 
-    var mode: Mode
-        get() = enumOr(sp.getString("mode", null), Mode.HID)
-        set(v) = sp.edit().putString("mode", v.name).apply()
+    /** Settings of version 1 (single device), migrated into the device list. */
+    val legacyMode: String? get() = sp.getString("mode", null)
+    val legacyDevice: String? get() = sp.getString("device", null)
+    val legacyToggle: String? get() = sp.getString("toggle", null)
 
-    var deviceAddress: String?
-        get() = sp.getString("device", null)
-        set(v) = sp.edit().putString("device", v).apply()
+    fun clearLegacy() = sp.edit().remove("mode").remove("device").remove("toggle").apply()
 
     var sensitivity: Float
         get() = sp.getFloat("sensitivity", 1f)
@@ -43,10 +40,11 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("suggestions", false)
         set(v) = sp.edit().putBoolean("suggestions", v).apply()
 
-    var layoutToggle: LayoutToggle
-        get() = enumOr(sp.getString("toggle", null), LayoutToggle.ALT_SHIFT)
-        set(v) = sp.edit().putString("toggle", v.name).apply()
+    var page: String?
+        get() = sp.getString("page", null)
+        set(v) = sp.edit().putString("page", v).apply()
 
-    private inline fun <reified T : Enum<T>> enumOr(name: String?, default: T): T =
-        enumValues<T>().firstOrNull { it.name == name } ?: default
+    var draft: String
+        get() = sp.getString("draft", "") ?: ""
+        set(v) = sp.edit().putString("draft", v).apply()
 }

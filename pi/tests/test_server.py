@@ -35,6 +35,12 @@ class TranslatorTest(unittest.TestCase):
         self.assertEqual(s.HID_TO_KEY[0x45], 88)   # F12
         self.assertEqual(s.HID_TO_KEY[0x52], 103)  # Up
 
+    def test_consumer(self):
+        t = s.ReportTranslator()
+        self.assertEqual(t.consumer(struct.pack("<H", 0xE9)), [(s.EV_KEY, 115, 1)])
+        self.assertEqual(t.consumer(bytes(2)), [(s.EV_KEY, 115, 0)])
+        self.assertEqual(s.FrameReader().feed(bytes([3, 0x23, 0x02])), [(3, bytes([0x23, 0x02]))])
+
     def test_mouse(self):
         t = s.ReportTranslator()
         report = struct.pack("<Bhhbb", 1, -3, 400, 1, 0)
